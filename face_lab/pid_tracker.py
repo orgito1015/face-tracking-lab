@@ -23,6 +23,43 @@ FACE_TIMEOUT = 3.0
 
 
 # ---------------------------------------------------------------------------
+# UI helpers
+# ---------------------------------------------------------------------------
+
+def _side_by_side(
+    left: np.ndarray,
+    right: np.ndarray,
+    left_label: str = "",
+    right_label: str = "",
+) -> np.ndarray:
+    """Return a single frame with *left* and *right* placed side-by-side."""
+    h = max(left.shape[0], right.shape[0])
+
+    def _fit(img: np.ndarray) -> np.ndarray:
+        if img.shape[0] == h:
+            return img.copy()
+        scale = h / img.shape[0]
+        return cv2.resize(img, (int(img.shape[1] * scale), h))
+
+    left = _fit(left)
+    right = _fit(right)
+
+    for img, label in ((left, left_label), (right, right_label)):
+        if label:
+            cv2.putText(
+                img, label, (8, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 4, cv2.LINE_AA,
+            )
+            cv2.putText(
+                img, label, (8, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA,
+            )
+
+    divider = np.full((h, 3, 3), 80, dtype=np.uint8)
+    return np.hstack([left, divider, right])
+
+
+# ---------------------------------------------------------------------------
 # MockTello — simulated drone with integrated webcam and CSV logger
 # ---------------------------------------------------------------------------
 
@@ -173,6 +210,7 @@ def main() -> None:
     try:
         while True:
             frame = cv2.resize(reader.frame, (FRAME_W, FRAME_H))
+            raw = frame.copy()
             frame, cx, cy, area = find_face(frame, cascade)
 
             if area > 0:
@@ -183,14 +221,14 @@ def main() -> None:
                     frame, "NO FACE - HOVERING", (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2
                 )
-                cv2.imshow("Tracker", frame)
+                cv2.imshow("Tracker", _side_by_side(raw, frame, "Camera", "Tracking"))
                 cv2.waitKey(1)
                 continue
 
             lr, fb, ud, yaw, prev_err = track(cx, cy, area, prev_err, kp, kd)
             drone.send_rc_control(lr, fb, ud, yaw, cx, cy, area)
 
-            cv2.imshow("Tracker", frame)
+            cv2.imshow("Tracker", _side_by_side(raw, frame, "Camera", "Tracking"))
             if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q")):
                 break
     finally:

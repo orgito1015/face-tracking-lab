@@ -13,9 +13,53 @@ from typing import List, Tuple
 
 import cv2
 import mediapipe as mp
+import numpy as np
 
 
 Box = Tuple[int, int, int, int]
+
+
+# ---------------------------------------------------------------------------
+# UI helpers
+# ---------------------------------------------------------------------------
+
+def _side_by_side(
+    left: np.ndarray,
+    right: np.ndarray,
+    left_label: str = "",
+    right_label: str = "",
+) -> np.ndarray:
+    """Return a single frame with *left* and *right* placed side-by-side.
+
+    Both panels are resized to the same height.  A thin grey divider is
+    inserted between them and optional white panel labels are drawn in the
+    top-left corner of each side.
+    """
+    h = max(left.shape[0], right.shape[0])
+
+    def _fit(img: np.ndarray) -> np.ndarray:
+        if img.shape[0] == h:
+            return img.copy()
+        scale = h / img.shape[0]
+        return cv2.resize(img, (int(img.shape[1] * scale), h))
+
+    left = _fit(left)
+    right = _fit(right)
+
+    for img, label in ((left, left_label), (right, right_label)):
+        if label:
+            cv2.putText(
+                img, label, (8, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 4, cv2.LINE_AA,
+            )
+            cv2.putText(
+                img, label, (8, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA,
+            )
+
+    _DIVIDER_GRAY = 80
+    divider = np.full((h, 3, 3), _DIVIDER_GRAY, dtype=np.uint8)
+    return np.hstack([left, divider, right])
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +205,7 @@ def run_haar(camera_index: int, benchmark_seconds: int) -> float:
             if not ok:
                 break
 
+            raw = frame.copy()
             boxes = detect_haar(frame, cascade)
             draw_boxes(frame, boxes, color=(0, 255, 255))
 
@@ -168,12 +213,11 @@ def run_haar(camera_index: int, benchmark_seconds: int) -> float:
             elapsed = max(time.time() - start, 1e-6)
             fps = frames / elapsed
 
-            cv2.putText(frame, f"Haar FPS: {fps:.1f}", (20, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-            cv2.putText(frame, f"Faces: {len(boxes)}", (20, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+            cv2.putText(frame, f"Haar  FPS: {fps:.1f}  Faces: {len(boxes)}", (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
 
-            cv2.imshow("face_detect - Haar", frame)
+            combined = _side_by_side(raw, frame, "Camera", "Haar Detection")
+            cv2.imshow("face_detect - Haar", combined)
             if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q")):
                 break
             if benchmark_seconds > 0 and elapsed >= benchmark_seconds:
@@ -204,6 +248,7 @@ def run_mediapipe(camera_index: int, benchmark_seconds: int) -> float:
             if not ok:
                 break
 
+            raw = frame.copy()
             boxes = detect_mediapipe(frame, detector, kind)
             draw_boxes(frame, boxes, color=(0, 255, 0))
 
@@ -211,10 +256,11 @@ def run_mediapipe(camera_index: int, benchmark_seconds: int) -> float:
             elapsed = max(time.time() - start, 1e-6)
             fps = frames / elapsed
 
-            cv2.putText(frame, f"MediaPipe FPS: {fps:.1f}", (20, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            cv2.putText(frame, f"MediaPipe  FPS: {fps:.1f}  Faces: {len(boxes)}", (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
 
-            cv2.imshow("face_detect - MediaPipe", frame)
+            combined = _side_by_side(raw, frame, "Camera", "MediaPipe Detection")
+            cv2.imshow("face_detect - MediaPipe", combined)
             if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q")):
                 break
             if benchmark_seconds > 0 and elapsed >= benchmark_seconds:
@@ -234,6 +280,74 @@ def run_mediapipe(camera_index: int, benchmark_seconds: int) -> float:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def run_both_combined(camera_index: int, benchmark_seconds: int) -> None:
+    """Run Haar and MediaPipe detectors simultaneously on every frame.
+
+    Displays a single side-by-side window: Haar result on the left,
+    MediaPipe result on the right.
+    """
+    cap = _open_camera(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open webcam for combined backend.")
+
+    cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    if cascade.empty():
+        raise RuntimeError("Could not load haarcascade_frontalface_default.xml.")
+
+    kind, mp_detector = create_mediapipe_detector()
+    print(f"MediaPipe detector backend: {kind}")
+
+    start = time.time()
+    frames = 0
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            haar_frame = frame.copy()
+            mp_frame = frame.copy()
+
+            haar_boxes = detect_haar(haar_frame, cascade)
+            draw_boxes(haar_frame, haar_boxes, color=(0, 255, 255))
+
+            mp_boxes = detect_mediapipe(mp_frame, mp_detector, kind)
+            draw_boxes(mp_frame, mp_boxes, color=(0, 255, 0))
+
+            frames += 1
+            elapsed = max(time.time() - start, 1e-6)
+            fps = frames / elapsed
+
+            cv2.putText(
+                haar_frame,
+                f"Haar  FPS: {fps:.1f}  Faces: {len(haar_boxes)}",
+                (8, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2,
+            )
+            cv2.putText(
+                mp_frame,
+                f"MediaPipe  FPS: {fps:.1f}  Faces: {len(mp_boxes)}",
+                (8, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2,
+            )
+
+            combined = _side_by_side(haar_frame, mp_frame, "Haar", "MediaPipe")
+            cv2.imshow("face_detect - Haar vs MediaPipe", combined)
+            if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q")):
+                break
+            if benchmark_seconds > 0 and elapsed >= benchmark_seconds:
+                break
+
+        avg_fps = frames / max(time.time() - start, 1e-6)
+        print(f"Combined avg FPS ({benchmark_seconds}s): {avg_fps:.2f}")
+    finally:
+        if hasattr(mp_detector, "close"):
+            mp_detector.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Face detection: Haar and/or MediaPipe backends"
@@ -248,9 +362,11 @@ def main() -> None:
                         help="Stop after N seconds and print avg FPS (default: 30)")
     args = parser.parse_args()
 
-    if args.backend in ("haar", "both"):
+    if args.backend == "both":
+        run_both_combined(args.camera_index, args.benchmark_seconds)
+    elif args.backend == "haar":
         run_haar(args.camera_index, args.benchmark_seconds)
-    if args.backend in ("mediapipe", "both"):
+    elif args.backend == "mediapipe":
         run_mediapipe(args.camera_index, args.benchmark_seconds)
 
 
